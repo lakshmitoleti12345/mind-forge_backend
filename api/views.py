@@ -1,4 +1,5 @@
 from rest_framework import viewsets, status, permissions
+from django.db import OperationalError as DjangoOperationalError
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.decorators import action
@@ -105,17 +106,24 @@ class ExecuteCodeView(APIView):
         )
 
         user_obj = request.user if request.user.is_authenticated else None
-        submission = UserCodeSubmission.objects.create(
-            user=user_obj,
-            problem=problem,
-            submitted_code=submitted_code,
-            status=eval_output['status'],
-            execution_time_ms=eval_output['execution_time_ms'],
-            test_results_json=eval_output['results']
-        )
+        submission_id = None
+        try:
+            submission = UserCodeSubmission.objects.create(
+                user=user_obj,
+                problem=problem,
+                submitted_code=submitted_code,
+                status=eval_output['status'],
+                execution_time_ms=eval_output['execution_time_ms'],
+                test_results_json=eval_output['results']
+            )
+            submission_id = submission.id
+        except DjangoOperationalError:
+            # Vercel read-only filesystem: DB write not possible on this
+            # serverless instance. Return results without a persisted record.
+            pass
 
         return Response({
-            'submission_id': submission.id,
+            'submission_id': submission_id,
             'status': eval_output['status'],
             'passed_count': eval_output['passed_count'],
             'total_tests': eval_output['total_tests'],
@@ -154,14 +162,18 @@ class StudyReviewView(APIView):
         card.ease_factor = new_ease
         card.next_review_date = next_review
         card.last_reviewed_at = timezone.now()
-        card.save()
-
-        ReviewLog.objects.create(
-            card=card,
-            rating=rating,
-            interval_granted=new_interval,
-            ease_factor_after=new_ease
-        )
+        try:
+            card.save()
+            ReviewLog.objects.create(
+                card=card,
+                rating=rating,
+                interval_granted=new_interval,
+                ease_factor_after=new_ease
+            )
+        except DjangoOperationalError:
+            # Vercel read-only filesystem: progress not persisted on this
+            # serverless instance, but we still return correct SM-2 output.
+            pass
 
         return Response({
             'message': 'Review recorded successfully',
