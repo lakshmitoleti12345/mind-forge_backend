@@ -13,22 +13,34 @@ SECRET_KEY = os.environ.get(
 DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in ('true', '1', 'yes')
 
 # ---------------------------------------------------------------------------
-# Vercel read-only filesystem workaround
-# Vercel's serverless environment mounts the project directory as read-only.
-# SQLite can only be opened for writing inside /tmp.  On cold-start we copy
-# the bundled db.sqlite3 (which holds the seeded decks/cards data) to /tmp
-# so that auth writes (register, login session) succeed.
+# Read-only filesystem workaround (Vercel & similar serverless platforms)
+#
+# Vercel serverless functions run on a read-only filesystem. The bundled
+# db.sqlite3 can be read but NOT written. We detect this by trying to open
+# the file for appending; if that raises OSError we copy to /tmp (writable).
+# This works without relying on any specific environment variable.
 # ---------------------------------------------------------------------------
 _BUNDLED_DB = BASE_DIR / 'db.sqlite3'
 _TMP_DB = Path('/tmp/db.sqlite3')
 
-if os.environ.get('VERCEL'):
-    # Only copy if the /tmp copy doesn't exist yet (or is older/smaller)
-    if not _TMP_DB.exists() and _BUNDLED_DB.exists():
-        shutil.copy2(_BUNDLED_DB, _TMP_DB)
-    _ACTIVE_DB = str(_TMP_DB)
-else:
-    _ACTIVE_DB = str(_BUNDLED_DB)
+def _get_active_db():
+    """Return a writable SQLite path, copying to /tmp if the bundled file is read-only."""
+    if _TMP_DB.exists():
+        # Already copied in a previous warm invocation - reuse it
+        return str(_TMP_DB)
+    if _BUNDLED_DB.exists():
+        try:
+            # Try opening for write - will raise OSError on read-only filesystems
+            with open(_BUNDLED_DB, 'ab'):
+                pass
+            return str(_BUNDLED_DB)  # Writable locally - use as-is
+        except OSError:
+            # Read-only filesystem (Vercel, etc.) - copy to writable /tmp
+            shutil.copy2(_BUNDLED_DB, _TMP_DB)
+            return str(_TMP_DB)
+    return str(_BUNDLED_DB)  # Fallback: let Django handle missing db
+
+_ACTIVE_DB = _get_active_db()
 
 ALLOWED_HOSTS = ['*']
 
